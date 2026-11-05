@@ -169,24 +169,31 @@ jobs:
               b"Rar!\x1a\x07\x01\x00",
           )
  
-          def validate_package(path):
+          def read_package_magic(path, offset=0):
               with path.open("rb") as f:
-                  magic = f.read(4)
- 
+                  f.seek(offset)
+                  return f.read(4)
+
+          def validate_package(path):
               suffix = path.suffix.lower()
- 
               valid_signatures = {
-                  ".nsp": b"PFS0",
-                  ".nsz": b"PFS0",
-                  ".xci": b"HEAD",
-                  ".xcz": b"HEAD",
+                  ".nsp": (0, b"PFS0"),
+                  ".nsz": (0, b"PFS0"),
+                  ".xci": (0x100, b"HEAD"),
+                  ".xcz": (0x100, b"HEAD"),
               }
 
-              if suffix not in valid_signatures or magic != valid_signatures[suffix]:
+              if suffix not in valid_signatures:
+                  raise SystemExit(f"Unsupported package extension: {path.name}")
+
+              offset, expected_magic = valid_signatures[suffix]
+              magic = read_package_magic(path, offset)
+              if magic != expected_magic:
                   raise SystemExit(
-                      f"Invalid {suffix} package signature: {path.name}"
+                      f"Invalid {suffix} package signature at offset "
+                      f"0x{offset:X}: {path.name} (found {magic!r})"
                   )
- 
+
           def add_package(source, label):
               target = game_dir / source.name
  
@@ -262,16 +269,20 @@ jobs:
                       else ""
                   )
 
-                  if signature[:4] == b"PFS0":
+                  pfs0_magic = read_package_magic(source, 0)
+                  xci_magic = read_package_magic(source, 0x100)
+
+                  if pfs0_magic == b"PFS0":
                       extension = ".nsz" if original_ext == "nsz" else ".nsp"
-                  elif signature[:4] == b"HEAD":
+                  elif xci_magic == b"HEAD":
                       extension = ".xcz" if original_ext == "xcz" else ".xci"
                   else:
                       raise SystemExit(
                           f"{label} is not a recognized RAR archive "
-                          "or direct NSP/XCI package."
+                          "or direct NSP/XCI package. "
+                          f"PFS0@0x0={pfs0_magic!r}, HEAD@0x100={xci_magic!r}"
                       )
- 
+
                   target = game_dir / f"{label}{extension}"
  
                   if target.exists():
