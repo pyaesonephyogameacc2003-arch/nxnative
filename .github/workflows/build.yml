@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install xcodegen zstd glslang unar
+          brew install xcodegen zstd glslang unar megatools
           python -m pip install --upgrade pip
           python -m pip install \
             lz4 "capstone>=5,<6" fonttools nsz backports.zstd gdown
@@ -62,22 +62,37 @@ jobs:
             local url="$1"
             local output="$2"
             local file_id
- 
+
             if [[ -z "${url:-}" ]]; then
               echo "::error::A required download URL is empty."
               exit 1
             fi
- 
-            file_id="$(python - "$url" <<'PY'
+
+            echo "Downloading $(basename "$output")..."
+            if [[ "$url" == https://mega.nz/* || "$url" == https://www.mega.nz/* || "$url" == https://mega.co.nz/* ]]; then
+              local mega_dir="$WORK/mega-$(basename "$output")"
+              local -a downloaded=()
+              mkdir -p "$mega_dir"
+              megadl --no-progress --path "$mega_dir" "$url"
+              while IFS= read -r -d '' item; do
+                downloaded+=("$item")
+              done < <(find "$mega_dir" -type f -print0)
+              if [[ "${#downloaded[@]}" -ne 1 ]]; then
+                echo "::error::MEGA link must resolve to exactly one file; found ${#downloaded[@]}."
+                exit 1
+              fi
+              mv "${downloaded[0]}" "$output"
+            else
+              file_id="$(python - "$url" <<'PY'
           import re
           import sys
           from urllib.parse import urlparse, parse_qs
- 
+
           url = sys.argv[1].strip()
           parsed = urlparse(url)
           query = parse_qs(parsed.query)
           file_id = None
- 
+
           if parsed.netloc.lower() in (
               "drive.google.com",
               "www.drive.google.com",
@@ -87,32 +102,31 @@ jobs:
                   file_id = match.group(1)
               elif query.get("id"):
                   file_id = query["id"][0]
- 
+
           if not file_id and re.fullmatch(
               r"[-A-Za-z0-9_]{20,}", url
           ):
               file_id = url
- 
+
           if not file_id:
               raise SystemExit(
-                  "Could not extract a Google Drive file ID."
+                  "URL must be a public MEGA file link, Google Drive file link, or Drive file ID."
               )
- 
+
           print(file_id)
           PY
           )"
- 
-            echo "Downloading $(basename "$output")..."
-            gdown "$file_id" -O "$output"
- 
+              gdown "$file_id" -O "$output"
+            fi
+
             if [[ ! -s "$output" ]]; then
               echo "::error::Downloaded file is empty."
               exit 1
             fi
- 
+
             file "$output"
           }
- 
+
           download_file "$GAME_URL" "$WORK/game.download"
           download_file "$KEYS_URL" "$WORK/prod.keys"
  
