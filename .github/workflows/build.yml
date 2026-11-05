@@ -47,7 +47,7 @@ jobs:
           brew install xcodegen zstd glslang spirv-cross unar
           python -m pip install --upgrade pip
           python -m pip install \
-            lz4 "capstone>=5,<6" fonttools nsz zbic backports.zstd gdown
+            lz4 "capstone>=5,<6" fonttools nsz backports.zstd gdown
  
       - name: Download game files and keys
         env:
@@ -164,13 +164,13 @@ jobs:
               suffix = path.suffix.lower()
  
               valid_signatures = {
-                  ".nsp": (b"PFS0",),
-                  ".nsz": (b"NSZ0", b"PFS0"),
-                  ".xci": (b"HEAD",),
-                  ".xcz": (b"XCZ0", b"HEAD"),
+                  ".nsp": b"PFS0",
+                  ".nsz": b"PFS0",
+                  ".xci": b"HEAD",
+                  ".xcz": b"HEAD",
               }
 
-              if suffix not in valid_signatures or magic not in valid_signatures[suffix]:
+              if suffix not in valid_signatures or magic != valid_signatures[suffix]:
                   raise SystemExit(
                       f"Invalid {suffix} package signature: {path.name}"
                   )
@@ -245,16 +245,12 @@ jobs:
  
                   if signature[:4] == b"PFS0":
                       extension = ".nsp"
-                  elif signature[:4] == b"NSZ0":
-                      extension = ".nsz"
                   elif signature[:4] == b"HEAD":
                       extension = ".xci"
-                  elif signature[:4] == b"XCZ0":
-                      extension = ".xcz"
                   else:
                       raise SystemExit(
                           f"{label} is not a recognized RAR archive "
-                          "or direct NSP/XCI/NSZ/XCZ package."
+                          "or direct NSP/XCI package."
                       )
  
                   target = game_dir / f"{label}{extension}"
