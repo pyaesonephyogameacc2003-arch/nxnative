@@ -3,8 +3,6 @@ name: NxNative - Generic IPA Builder
  
 on:
   workflow_dispatch:
-    inputs:
-
  
 permissions:
   contents: read
@@ -81,6 +79,9 @@ jobs:
                 echo "::error::MEGA link must resolve to exactly one file; found ${#downloaded[@]}."
                 exit 1
               fi
+              original_name="$(basename "${downloaded[0]}")"
+              original_ext="${original_name##*.}"
+              printf '%s' "$original_ext" > "${output}.ext"
               mv "${downloaded[0]}" "$output"
             else
               file_id="$(python - "$url" <<'PY'
@@ -254,10 +255,17 @@ jobs:
                       "checking as a direct package."
                   )
  
+                  original_ext_file = work / f"{label}.download.ext"
+                  original_ext = (
+                      original_ext_file.read_text().strip().lower()
+                      if original_ext_file.exists()
+                      else ""
+                  )
+
                   if signature[:4] == b"PFS0":
-                      extension = ".nsp"
+                      extension = ".nsz" if original_ext == "nsz" else ".nsp"
                   elif signature[:4] == b"HEAD":
-                      extension = ".xci"
+                      extension = ".xcz" if original_ext == "xcz" else ".xci"
                   else:
                       raise SystemExit(
                           f"{label} is not a recognized RAR archive "
