@@ -369,30 +369,9 @@ jobs:
           echo "IPA successfully created: $OUTPUT"
           ls -lh "$OUTPUT"
 
-          ROMFS_IMAGE="$(python - "$GAME_DIR" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
 
-          root = Path(sys.argv[1])
-          images = list(root.glob("**/extract/*/RomFS.img"))
-          def version_key(path):
-              match = re.search(r"v(\d+)$", path.parent.name)
-              return int(match.group(1)) if match else -1
-          images.sort(key=version_key)
-          print(images[-1] if images else "")
-          PY
-          )"
-          if [[ -z "$ROMFS_IMAGE" || ! -s "$ROMFS_IMAGE" ]]; then
-            echo "::error::The extracted BOTW RomFS.img was not found."
-            find "$GAME_DIR" -type f -name 'RomFS.img' -print || true
-            exit 1
-          fi
-          cp "$ROMFS_IMAGE" "$RUNNER_TEMP/BOTW-RomFS.img"
-          echo "BOTW RomFS image: $ROMFS_IMAGE"
-          ls -lh "$RUNNER_TEMP/BOTW-RomFS.img"
- 
-      - name: Upload BOTW IPA and separate RomFS to Google Drive
+
+      - name: Upload BOTW IPA only to Google Drive
         if: success()
         env:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
@@ -409,19 +388,15 @@ jobs:
           REMOTE_DIR="${GDRIVE_REMOTE_PATH%/}"
           rclone copyto "$RUNNER_TEMP/NxNative.ipa" "$REMOTE_DIR/BOTW.ipa" \
             --drive-chunk-size 64M --transfers 1 --checkers 4 --retries 5 --low-level-retries 10
-          rclone copyto "$RUNNER_TEMP/BOTW-RomFS.img" "$REMOTE_DIR/BOTW-RomFS.img" \
-            --drive-chunk-size 64M --transfers 1 --checkers 4 --retries 5 --low-level-retries 10
 
           {
             echo "## BOTW IPA-only build uploaded"
             echo ""
             echo "- IPA: BOTW.ipa"
-            echo "- Separate game data: BOTW-RomFS.img"
+            echo "- Separate game data: not uploaded (already provided by the user)"
             echo "- Google Drive folder: $GDRIVE_REMOTE_PATH"
-            echo ""
-            echo "Copy BOTW-RomFS.img into the installed NxNative app's Documents folder as romfs.img."
           } >> "$GITHUB_STEP_SUMMARY"
- 
+
       - name: Upload build logs if available
         if: always()
         uses: actions/upload-artifact@v4
