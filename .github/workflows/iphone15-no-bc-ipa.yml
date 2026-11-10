@@ -1,0 +1,382 @@
+ 
+name: NxNative - iPhone 15 A16 No-BC IPA
+ 
+on:
+  workflow_dispatch:
+ 
+permissions:
+  contents: read
+ 
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+ 
+    steps:
+      - name: Checkout this nxnative fork (no-bc)
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.2 and install Metal toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version | grep -q "Xcode 27.2"
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+ 
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+ 
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang unar megatools
+          python -m pip install --upgrade pip
+          python -m pip install \
+            lz4 "capstone>=5,<6" fonttools nsz zbic backports.zstd gdown
+ 
+      - name: Download game files and keys
+        env:
+          GAME_URL: ${{ secrets.Game_URL }}
+          UPDATE_URL: ${{ secrets.Update_URL }}
+          DLC_URL: ${{ secrets.DLC_URL }}
+          KEYS_URL: ${{ secrets.Keys_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/nxnative"
+          mkdir -p "$WORK"
+ 
+          download_file() {
+            local url="$1"
+            local output="$2"
+            local file_id
+
+            if [[ -z "${url:-}" ]]; then
+              echo "::error::A required download URL is empty."
+              exit 1
+            fi
+
+            echo "Downloading $(basename "$output")..."
+            if [[ "$url" == https://mega.nz/* || "$url" == https://www.mega.nz/* || "$url" == https://mega.co.nz/* ]]; then
+              local mega_dir="$WORK/mega-$(basename "$output")"
+              local -a downloaded=()
+              mkdir -p "$mega_dir"
+              megadl --no-progress --path "$mega_dir" "$url"
+              while IFS= read -r -d '' item; do
+                downloaded+=("$item")
+              done < <(find "$mega_dir" -type f -print0)
+              if [[ "${#downloaded[@]}" -ne 1 ]]; then
+                echo "::error::MEGA link must resolve to exactly one file; found ${#downloaded[@]}."
+                exit 1
+              fi
+              original_name="$(basename "${downloaded[0]}")"
+              original_ext="${original_name##*.}"
+              printf '%s' "$original_ext" > "${output}.ext"
+              mv "${downloaded[0]}" "$output"
+            else
+              file_id="$(python - "$url" <<'PY'
+          import re
+          import sys
+          from urllib.parse import urlparse, parse_qs
+
+          url = sys.argv[1].strip()
+          parsed = urlparse(url)
+          query = parse_qs(parsed.query)
+          file_id = None
+
+          if parsed.netloc.lower() in (
+              "drive.google.com",
+              "www.drive.google.com",
+          ):
+              match = re.search(r"/file/d/([^/]+)", parsed.path)
+              if match:
+                  file_id = match.group(1)
+              elif query.get("id"):
+                  file_id = query["id"][0]
+
+          if not file_id and re.fullmatch(
+              r"[-A-Za-z0-9_]{20,}", url
+          ):
+              file_id = url
+
+          if not file_id:
+              raise SystemExit(
+                  "URL must be a public MEGA file link, Google Drive file link, or Drive file ID."
+              )
+
+          print(file_id)
+          PY
+          )"
+              gdown "$file_id" -O "$output"
+            fi
+
+            if [[ ! -s "$output" ]]; then
+              echo "::error::Downloaded file is empty."
+              exit 1
+            fi
+
+            file "$output"
+          }
+
+          download_file "$GAME_URL" "$WORK/game.download"
+          download_file "$KEYS_URL" "$WORK/prod.keys"
+ 
+          if [[ -n "${UPDATE_URL:-}" ]]; then
+            download_file "$UPDATE_URL" "$WORK/update.download"
+          else
+            echo "No UPDATE_URL configured; continuing without an update."
+          fi
+ 
+          if [[ -n "${DLC_URL:-}" ]]; then
+            download_file "$DLC_URL" "$WORK/dlc.download"
+          else
+            echo "No DLC_URL configured; continuing without DLC."
+          fi
+ 
+          chmod 600 "$WORK/prod.keys"
+ 
+      - name: Extract RAR archives or accept direct game packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/nxnative"
+          GAME_DIR="$RUNNER_TEMP/GameFiles"
+          mkdir -p "$GAME_DIR"
+ 
+          python - "$WORK" "$GAME_DIR" <<'PY'
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+ 
+          work = Path(sys.argv[1])
+          game_dir = Path(sys.argv[2])
+          package_extensions = {
+              ".nsp", ".xci", ".nsz", ".xcz"
+          }
+          rar_signatures = (
+              b"Rar!\x1a\x07\x00",
+              b"Rar!\x1a\x07\x01\x00",
+          )
+ 
+          def read_package_magic(path, offset=0):
+              with path.open("rb") as f:
+                  f.seek(offset)
+                  return f.read(4)
+
+          def validate_package(path):
+              suffix = path.suffix.lower()
+              valid_signatures = {
+                  ".nsp": (0, b"PFS0"),
+                  ".nsz": (0, b"PFS0"),
+                  ".xci": (0x100, b"HEAD"),
+                  ".xcz": (0x100, b"HEAD"),
+              }
+
+              if suffix not in valid_signatures:
+                  raise SystemExit(f"Unsupported package extension: {path.name}")
+
+              offset, expected_magic = valid_signatures[suffix]
+              magic = read_package_magic(path, offset)
+              if magic != expected_magic:
+                  raise SystemExit(
+                      f"Invalid {suffix} package signature at offset "
+                      f"0x{offset:X}: {path.name} (found {magic!r})"
+                  )
+
+          def add_package(source, label):
+              target = game_dir / source.name
+ 
+              if target.exists():
+                  raise SystemExit(
+                      "Duplicate package filename: " + source.name
+                  )
+ 
+              validate_package(source)
+              shutil.copy2(source, target)
+ 
+              print(
+                  f"Added {label}: {target.name} "
+                  f"({target.stat().st_size:,} bytes)"
+              )
+ 
+          def process_download(label):
+              source = work / f"{label}.download"
+ 
+              if not source.exists():
+                  print(f"No {label} download; skipping.")
+                  return
+ 
+              with source.open("rb") as f:
+                  signature = f.read(8)
+ 
+              is_rar = any(
+                  signature.startswith(magic)
+                  for magic in rar_signatures
+              )
+ 
+              if is_rar:
+                  extract_dir = work / f"extracted-{label}"
+                  extract_dir.mkdir(parents=True, exist_ok=True)
+ 
+                  print(f"{label}: RAR archive detected; extracting.")
+ 
+                  subprocess.run(
+                      [
+                          "unar",
+                          "-o",
+                          str(extract_dir),
+                          str(source),
+                      ],
+                      check=True,
+                  )
+ 
+                  packages = sorted(
+                      p for p in extract_dir.rglob("*")
+                      if p.is_file()
+                      and p.suffix.lower() in package_extensions
+                  )
+ 
+                  if not packages:
+                      raise SystemExit(
+                          f"No NSP/XCI/NSZ/XCZ packages found "
+                          f"in the {label} RAR archive."
+                      )
+ 
+                  for package in packages:
+                      add_package(package, label)
+ 
+              else:
+                  print(
+                      f"{label}: not a RAR archive; "
+                      "checking as a direct package."
+                  )
+ 
+                  original_ext_file = work / f"{label}.download.ext"
+                  original_ext = (
+                      original_ext_file.read_text().strip().lower()
+                      if original_ext_file.exists()
+                      else ""
+                  )
+
+                  pfs0_magic = read_package_magic(source, 0)
+                  xci_magic = read_package_magic(source, 0x100)
+
+                  if pfs0_magic == b"PFS0":
+                      extension = ".nsz" if original_ext == "nsz" else ".nsp"
+                  elif xci_magic == b"HEAD":
+                      extension = ".xcz" if original_ext == "xcz" else ".xci"
+                  else:
+                      raise SystemExit(
+                          f"{label} is not a recognized RAR archive "
+                          "or direct NSP/XCI package. "
+                          f"PFS0@0x0={pfs0_magic!r}, HEAD@0x100={xci_magic!r}"
+                      )
+
+                  target = game_dir / f"{label}{extension}"
+ 
+                  if target.exists():
+                      raise SystemExit(
+                          f"Output package already exists: {target.name}"
+                      )
+ 
+                  shutil.copy2(source, target)
+                  validate_package(target)
+ 
+                  print(
+                      f"Added direct package: {target.name} "
+                      f"({target.stat().st_size:,} bytes)"
+                  )
+ 
+          process_download("game")
+          process_download("update")
+          process_download("dlc")
+ 
+          packages = sorted(
+              p for p in game_dir.iterdir()
+              if p.is_file()
+              and p.suffix.lower() in package_extensions
+          )
+ 
+          if not packages:
+              raise SystemExit("No game packages were prepared.")
+ 
+          print("\n=== Prepared game packages ===")
+          for package in packages:
+              print(f"{package.name}: {package.stat().st_size:,} bytes")
+          PY
+ 
+          test -s "$WORK/prod.keys"
+ 
+      - name: Verify shader toolchain and generated header
+        shell: bash
+        run: |
+          set -euo pipefail
+          python dm/gfx/tools/tool_lock.py --check-tools
+          python dm/gfx/tools/dmsh_chain.py --header
+ 
+      - name: Build unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          # iPhone 15 A16: force the no-BC texture compatibility path.
+          export DM_NO_BC_ASTC=all
+          # Show the frame-rate counter by default in the iOS pre-game settings.
+          export DM_SHOW_FPS=1
+          WORK="$RUNNER_TEMP/nxnative"
+          GAME_DIR="$RUNNER_TEMP/GameFiles"
+          OUTPUT="$RUNNER_TEMP/NxNative.ipa"
+ 
+          python scripts/build_ipa_from_nsp.py \
+            "$GAME_DIR" \
+            -k "$WORK/prod.keys" \
+            --gpu none \
+            -o "$OUTPUT"
+ 
+          if [[ ! -s "$OUTPUT" ]]; then
+            echo "::error::IPA build did not produce an output file."
+            exit 1
+          fi
+ 
+          echo "IPA successfully created: $OUTPUT"
+          ls -lh "$OUTPUT"
+ 
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NxNative-IPA-iPhone15-A16-No-BC
+          path: ${{ runner.temp }}/NxNative.ipa
+          if-no-files-found: error
+          retention-days: 7
+ 
+      - name: Upload build logs if available
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NxNative-Build-Logs
+          path: |
+            ${{ runner.temp }}/GameFiles/*_build/logs/
+            ${{ runner.temp }}/GameFiles/*_survey/
+          if-no-files-found: ignore
+          retention-days: 7
+ 
+      - name: Clean up downloaded files and keys
+        if: always()
+        shell: bash
+        run: |
+          rm -rf \
+            "$RUNNER_TEMP/nxnative" \
+            "$RUNNER_TEMP/GameFiles"
+ 
+
