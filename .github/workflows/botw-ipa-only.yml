@@ -39,27 +39,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install xcodegen zstd glslang unar megatools rclone
+          brew install xcodegen zstd glslang unar megatools
           python -m pip install --upgrade pip
           python -m pip install \
             lz4 "capstone>=5,<6" fonttools nsz zbic backports.zstd gdown
  
-      - name: Verify Google Drive upload configuration
-        env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
-          GDRIVE_REMOTE_PATH: ${{ secrets.GDRIVE_REMOTE_PATH }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${RCLONE_CONFIG:-}" || -z "${GDRIVE_REMOTE_PATH:-}" ]]; then
-            echo "::error::Add repository secrets RCLONE_CONFIG and GDRIVE_REMOTE_PATH before running this workflow."
-            exit 1
-          fi
-          if [[ "$GDRIVE_REMOTE_PATH" != *:* ]]; then
-            echo "::error::GDRIVE_REMOTE_PATH must be an rclone remote path, e.g. gdrive:BOTW."
-            exit 1
-          fi
-
       - name: Download game files and keys
         env:
           GAME_URL: ${{ secrets.Game_URL }}
@@ -371,31 +355,15 @@ jobs:
 
 
 
-      - name: Upload BOTW IPA only to Google Drive
+      - name: Upload BOTW IPA as GitHub Actions artifact
         if: success()
-        env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
-          GDRIVE_REMOTE_PATH: ${{ secrets.GDRIVE_REMOTE_PATH }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          CONFIG_DIR="$HOME/.config/rclone"
-          mkdir -p "$CONFIG_DIR"
-          printf '%s' "$RCLONE_CONFIG" > "$CONFIG_DIR/rclone.conf"
-          chmod 600 "$CONFIG_DIR/rclone.conf"
-
-          rclone mkdir "$GDRIVE_REMOTE_PATH"
-          REMOTE_DIR="${GDRIVE_REMOTE_PATH%/}"
-          rclone copyto "$RUNNER_TEMP/NxNative.ipa" "$REMOTE_DIR/BOTW.ipa" \
-            --drive-chunk-size 64M --transfers 1 --checkers 4 --retries 5 --low-level-retries 10
-
-          {
-            echo "## BOTW IPA-only build uploaded"
-            echo ""
-            echo "- IPA: BOTW.ipa"
-            echo "- Separate game data: not uploaded (already provided by the user)"
-            echo "- Google Drive folder: $GDRIVE_REMOTE_PATH"
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOTW-IPA-iPhone15-A16-NoBC
+          path: ${{ runner.temp }}/NxNative.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
       - name: Upload build logs if available
         if: always()
