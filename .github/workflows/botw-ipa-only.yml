@@ -383,6 +383,5 @@ jobs:
           rm -rf \
             "$RUNNER_TEMP/nxnative" \
             "$RUNNER_TEMP/GameFiles" \
-            "$RUNNER_TEMP/BOTW-RomFS.img"
  
 
