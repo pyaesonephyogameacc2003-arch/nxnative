@@ -46,15 +46,19 @@ jobs:
  
       - name: Download game files and keys
         env:
-          GAME_URL: ${{ secrets.Game_URL }}
-          UPDATE_URL: ${{ secrets.Update_URL }}
+          GAME_URL: ${{ secrets.GAME_URL }}
+          UPDATE_URL: ${{ secrets.UPDATE_URL }}
           DLC_URL: ${{ secrets.DLC_URL }}
-          KEYS_URL: ${{ secrets.Keys_URL }}
+          KEYS_URL: ${{ secrets.KEYS_URL }}
         shell: bash
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/nxnative"
           mkdir -p "$WORK"
+
+          : "${GAME_URL:?Missing GitHub Secret GAME_URL (BOTW base game).}"
+          : "${UPDATE_URL:?Missing GitHub Secret UPDATE_URL (BOTW Update 1.9.0).}"
+          : "${KEYS_URL:?Missing GitHub Secret KEYS_URL (prod.keys).}"
  
           download_file() {
             local url="$1"
@@ -131,11 +135,8 @@ jobs:
           download_file "$GAME_URL" "$WORK/game.download"
           download_file "$KEYS_URL" "$WORK/prod.keys"
  
-          if [[ -n "${UPDATE_URL:-}" ]]; then
-            download_file "$UPDATE_URL" "$WORK/update.download"
-          else
-            echo "No UPDATE_URL configured; continuing without an update."
-          fi
+          # Update is mandatory: this workflow targets the user's BOTW 1.9.0 dump.
+          download_file "$UPDATE_URL" "$WORK/update.download"
  
           if [[ -n "${DLC_URL:-}" ]]; then
             download_file "$DLC_URL" "$WORK/dlc.download"
@@ -317,6 +318,7 @@ jobs:
           PY
  
           test -s "$WORK/prod.keys"
+          test -s "$WORK/update.download"
  
       - name: Verify shader toolchain and generated header
         shell: bash
